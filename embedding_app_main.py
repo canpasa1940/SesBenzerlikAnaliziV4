@@ -3,17 +3,21 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from audio_classifier import AudioClassifier
-import tempfile
+import sys
 import os
+import tempfile
 import warnings
+
+# Embedding classifier'ı import et
+sys.path.append('embedding_classifier')
+from embedding_audio_classifier import EmbeddingAudioClassifier
 
 warnings.filterwarnings("ignore")
 
 # Sayfa konfigürasyonu
 st.set_page_config(
-    page_title="🎵 Ses Benzerlik Analizi",
-    page_icon="🎵",
+    page_title="🧠 Embedding Tabanlı Ses Benzerlik Analizi",
+    page_icon="🧠",
     layout="wide"
 )
 
@@ -35,17 +39,31 @@ st.markdown("""
         margin: 0.5rem 0;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
+    .embedding-info {
+        background-color: #f0f8ff;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #ff7f0e;
+        margin: 0.5rem 0;
+    }
+    .comparison-card {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 2px solid #28a745;
+        margin: 0.5rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 @st.cache_resource
-def load_classifier():
-    """Sınıflandırıcıyı yükle (cache'lendi)"""
+def load_embedding_classifier():
+    """Embedding sınıflandırıcıyı yükle (cache'lendi)"""
     try:
-        classifier = AudioClassifier()
+        classifier = EmbeddingAudioClassifier()
         return classifier
     except Exception as e:
-        st.error(f"Model yüklenemedi: {e}")
+        st.error(f"Embedding model yüklenemedi: {e}")
         return None
 
 # Session state'i başlat
@@ -57,29 +75,37 @@ if 'audio_cache' not in st.session_state:
     st.session_state.audio_cache = {}
 
 def main():
-    st.markdown('<div class="main-header">🎵 Ses Benzerlik Analizi</div>', 
+    st.markdown('<div class="main-header">🧠 Embedding Tabanlı Ses Benzerlik Analizi</div>', 
                 unsafe_allow_html=True)
     
-    # Sınıflandırıcıyı yükle
-    classifier = load_classifier()
+    # Embedding sınıflandırıcıyı yükle
+    classifier = load_embedding_classifier()
     if classifier is None:
         st.stop()
     
     # Cache'deki veritabanını classifier'a yükle
     classifier.reference_database = st.session_state.reference_database
     
+    # Embedding bilgilerini göster
     st.markdown(f"""
-    **Desteklenen Sınıflar:** {', '.join(classifier.classes)}
+    <div class="embedding-info">
+        <h4>🧠 Embedding Bilgileri</h4>
+        <p><strong>Embedding Boyutu:</strong> {classifier.embedding_dim}</p>
+        <p><strong>Desteklenen Sınıflar:</strong> {', '.join(classifier.classes)}</p>
+        <p><strong>Benzerlik Yöntemi:</strong> Son katman öncesi embedding'ler</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    **Kullanım:** Ses dosyalarınızı yükleyin ve sistem otomatik olarak sınıflandıracak.
+    st.markdown(f"""
+    **Kullanım:** Ses dosyalarınızı yükleyin ve sistem embedding tabanlı benzerlik analizi yapacak.
     """)
     
     # Tab'lar oluştur
-    tab1, tab2 = st.tabs(["📁 Toplu Yükleme", "🎯 Tek Dosya Analizi"])
+    tab1, tab2, tab3 = st.tabs(["📁 Toplu Yükleme", "🎯 Tek Dosya Analizi", "🔄 Yöntem Karşılaştırması"])
     
     with tab1:
         st.subheader("📁 Çoklu Ses Dosyası Yükleme")
-        st.write("Birden fazla ses dosyasını yükleyip toplu analiz yapın.")
+        st.write("Birden fazla ses dosyasını yükleyip embedding tabanlı toplu analiz yapın.")
         
         # Gelişmiş işleme seçenekleri
         with st.expander("⚙️ Gelişmiş İşleme Ayarları"):
@@ -100,7 +126,7 @@ def main():
             type=['wav'],
             accept_multiple_files=True,
             help="WAV formatında ses dosyaları yükleyebilirsiniz",
-            key="bulk_upload"
+            key="bulk_upload_embedding"
         )
         
         if uploaded_files:
@@ -113,7 +139,7 @@ def main():
                     new_files.append(uploaded_file)
             
             if new_files:
-                st.info(f"{len(new_files)} yeni dosya bulundu. İşleniyor...")
+                st.info(f"{len(new_files)} yeni dosya bulundu. Embedding'ler çıkarılıyor...")
                 
                 # Progress bar
                 progress_bar = st.progress(0)
@@ -130,22 +156,25 @@ def main():
                         tmp_file.write(file_content)
                         tmp_file.flush()
                         
-                        # Gelişmiş sınıflandırma (VAD + Segmentasyon + İlk Pattern)
-                        predicted_class, confidence, features = classifier.predict_single_enhanced(
+                        # Embedding tabanlı sınıflandırma
+                        result = classifier.predict_single_with_embedding(
                             tmp_file.name, use_vad=use_vad, use_segmentation=use_segmentation, 
                             use_first_pattern=use_first_pattern
                         )
                         
-                        if predicted_class is not None:
+                        if result[0] is not None:
+                            predicted_class, confidence, features, embedding = result
+                            
                             # Veritabanına ekle
-                            classifier.add_to_database(uploaded_file, predicted_class, features)
+                            classifier.add_to_database(uploaded_file, predicted_class, features, embedding)
                             
                             # Session state'e ekle
                             st.session_state.processed_files.append({
                                 'filename': uploaded_file.name,
                                 'predicted_class': predicted_class,
                                 'confidence': confidence,
-                                'features': features
+                                'features': features,
+                                'embedding': embedding
                             })
                             
                             # Ses dosyasını cache'le
@@ -159,7 +188,7 @@ def main():
                 
                 progress_bar.empty()
                 status_text.empty()
-                st.success(f"{len(new_files)} dosya başarıyla işlendi!")
+                st.success(f"{len(new_files)} dosya başarıyla işlendi! Embedding'ler çıkarıldı.")
             
             # Tüm işlenmiş dosyaları göster
             results = st.session_state.processed_files
@@ -169,7 +198,7 @@ def main():
                 col1, col2 = st.columns([2, 1])
                 
                 with col1:
-                    st.subheader("📊 Sınıflandırma Sonuçları")
+                    st.subheader("📊 Embedding Tabanlı Sınıflandırma Sonuçları")
                     
                     # Temizle butonu
                     if st.button("🗑️ Tümünü Temizle", help="Tüm yüklenmiş dosyaları temizle"):
@@ -184,7 +213,8 @@ def main():
                         {
                             'Dosya': r['filename'],
                             'Tahmin': r['predicted_class'],
-                            'Güven': f"{r['confidence']:.3f}"
+                            'Güven': f"{r['confidence']:.3f}",
+                            'Embedding Boyutu': f"{len(r['embedding'])}"
                         } for r in results
                     ])
                     
@@ -209,7 +239,7 @@ def main():
                 selected_audio = st.selectbox(
                     "Çalmak istediğiniz sesi seçin:",
                     options=[r['filename'] for r in results],
-                    key="audio_player_bulk"
+                    key="audio_player_bulk_embedding"
                 )
                 
                 # Seçilen ses dosyasını çal
@@ -229,13 +259,13 @@ def main():
                 
                 st.markdown("---")
                 
-                # Benzerlik analizi için ses seçimi
-                st.subheader("🔍 Benzerlik Analizi")
+                # Embedding tabanlı benzerlik analizi
+                st.subheader("🧠 Embedding Tabanlı Benzerlik Analizi")
                 
                 selected_file = st.selectbox(
                     "Benzerlik analizi için bir ses seçin:",
                     options=[r['filename'] for r in results],
-                    help="Seçilen ses ile aynı sınıftaki diğer sesler arasında benzerlik analizi yapılacak"
+                    help="Seçilen ses ile aynı sınıftaki diğer sesler arasında embedding tabanlı benzerlik analizi yapılacak"
                 )
                 
                 if selected_file:
@@ -243,27 +273,29 @@ def main():
                     selected_result = next(r for r in results if r['filename'] == selected_file)
                     target_class = selected_result['predicted_class']
                     target_features = selected_result['features']
+                    target_embedding = selected_result['embedding']
                     
                     st.markdown(f"""
                     **Seçilen Ses:** {selected_file}  
                     **Sınıf:** {target_class}  
                     **Güven:** {selected_result['confidence']:.3f}
+                    **Embedding Boyutu:** {len(target_embedding)}
                     """)
                     
                     # Seçilen sesi çal
                     if selected_file in st.session_state.audio_cache:
                         st.audio(st.session_state.audio_cache[selected_file], format='audio/wav')
                     
-                    # Benzer sesleri bul
-                    similar_sounds = classifier.find_similar_sounds(
-                        target_features, target_class, top_k=10
+                    # Embedding tabanlı benzer sesleri bul
+                    similar_sounds = classifier.find_similar_sounds_embedding(
+                        target_embedding, target_class, top_k=10
                     )
                     
                     if similar_sounds:
                         col1, col2 = st.columns([1, 1])
                         
                         with col1:
-                            st.subheader(f"🎯 En Benzer Sesler ({target_class})")
+                            st.subheader(f"🧠 En Benzer Sesler ({target_class})")
                             
                             for i, sim in enumerate(similar_sounds):
                                 if sim['filename'] != selected_file:  # Kendisini gösterme
@@ -271,7 +303,7 @@ def main():
                                     <div class="similarity-card">
                                         <strong>{i+1}. {sim['filename']}</strong><br>
                                         <small>
-                                        🎯 Cosine Similarity: {sim['cosine_similarity']:.3f}<br>
+                                        🧠 Embedding Similarity: {sim['cosine_similarity']:.3f}<br>
                                         📏 Euclidean Distance: {sim['euclidean_distance']:.3f}
                                         </small>
                                     </div>
@@ -284,22 +316,22 @@ def main():
                                 similar_audio = st.selectbox(
                                     "Benzer sesleri dinleyin:",
                                     options=similar_options,
-                                    key="similar_audio_player"
+                                    key="similar_audio_player_embedding"
                                 )
                                 
                                 if similar_audio and similar_audio in st.session_state.audio_cache:
                                     st.audio(st.session_state.audio_cache[similar_audio], format='audio/wav')
                         
                         with col2:
-                            # PCA görselleştirmesi
-                            pca_data = classifier.get_pca_visualization_data(
-                                target_features, target_class
+                            # Embedding PCA görselleştirmesi
+                            pca_data = classifier.get_pca_visualization_data_embedding(
+                                target_embedding, target_class
                             )
                             
                             if pca_data[0] is not None:
                                 pca_features, pca_names, variance_ratio, pca_obj = pca_data
                                 
-                                st.subheader(f"📍 PCA Haritası ({target_class})")
+                                st.subheader(f"📍 Embedding PCA Haritası ({target_class})")
                                 
                                 fig_pca = go.Figure()
                                 
@@ -329,7 +361,7 @@ def main():
                                 ))
                                 
                                 fig_pca.update_layout(
-                                    title=f"PCA Görselleştirmesi<br>Açıklanan Varyans: PC1={variance_ratio[0]:.2%}, PC2={variance_ratio[1]:.2%}",
+                                    title=f"Embedding PCA Görselleştirmesi<br>Açıklanan Varyans: PC1={variance_ratio[0]:.2%}, PC2={variance_ratio[1]:.2%}",
                                     xaxis_title="1. Ana Bileşen",
                                     yaxis_title="2. Ana Bileşen",
                                     height=500
@@ -344,42 +376,42 @@ def main():
                 st.info("Henüz hiç ses dosyası yüklenmemiş.")
     
     with tab2:
-        st.subheader("🎯 Tek Dosya Benzerlik Analizi")
-        st.write("Tek bir ses dosyası yükleyip mevcut veritabanındaki seslerle karşılaştırın.")
+        st.subheader("🎯 Tek Dosya Embedding Analizi")
+        st.write("Tek bir ses dosyası yükleyip mevcut veritabanındaki seslerle embedding tabanlı karşılaştırın.")
         
         # Tek dosya için gelişmiş işleme seçenekleri
         with st.expander("⚙️ Gelişmiş İşleme Ayarları"):
             col1, col2, col3 = st.columns(3)
             with col1:
                 use_vad_single = st.checkbox("🔇 Sessizlik Temizleme (VAD)", value=True, 
-                                           help="Uzun ses dosyalarından sessiz bölümleri temizler", key="vad_single")
+                                           help="Uzun ses dosyalarından sessiz bölümleri temizler", key="vad_single_embedding")
             with col2:
                 use_segmentation_single = st.checkbox("✂️ Ses Segmentasyonu", value=True, 
-                                                    help="Çok uzun sesleri parçalara böler", key="seg_single")
+                                                    help="Çok uzun sesleri parçalara böler", key="seg_single_embedding")
             with col3:
                 use_first_pattern_single = st.checkbox("🎼 İlk Pattern Tespiti", value=True, 
-                                                      help="Tekrar eden seslerden sadece ilk karakteristik bölümü alır", key="pattern_single")
+                                                      help="Tekrar eden seslerden sadece ilk karakteristik bölümü alır", key="pattern_single_embedding")
         
         # Tek dosya yükleme
         single_file = st.file_uploader(
             "🎧 Analiz edilecek ses dosyasını yükleyin",
             type=['wav'],
-            help="Bu ses, mevcut veritabanındaki seslerle karşılaştırılacak",
-            key="single_upload"
+            help="Bu ses, mevcut veritabanındaki seslerle embedding tabanlı karşılaştırılacak",
+            key="single_upload_embedding"
         )
         
         if single_file:
             if len(st.session_state.processed_files) == 0:
                 st.warning("Önce 'Toplu Yükleme' sekmesinden referans sesler yüklemeniz gerekiyor!")
             else:
-                with st.spinner("Ses analiz ediliyor..."):
+                with st.spinner("Ses analiz ediliyor ve embedding çıkarılıyor..."):
                     # Geçici dosya oluştur
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
                         tmp_file.write(single_file.read())
                         tmp_file.flush()
                         
-                        # Gelişmiş sınıflandırma (VAD + Segmentasyon + İlk Pattern)
-                        predicted_class, confidence, features = classifier.predict_single_enhanced(
+                        # Embedding tabanlı sınıflandırma
+                        result = classifier.predict_single_with_embedding(
                             tmp_file.name, use_vad=use_vad_single, use_segmentation=use_segmentation_single,
                             use_first_pattern=use_first_pattern_single
                         )
@@ -387,35 +419,38 @@ def main():
                         # Geçici dosyayı sil
                         os.unlink(tmp_file.name)
                 
-                if predicted_class is not None:
+                if result[0] is not None:
+                    predicted_class, confidence, features, embedding = result
+                    
                     col1, col2 = st.columns([1, 1])
                     
                     with col1:
-                        st.subheader("📊 Sınıflandırma Sonucu")
+                        st.subheader("📊 Embedding Tabanlı Sınıflandırma Sonucu")
                         st.markdown(f"""
                         **Dosya:** {single_file.name}  
                         **Tahmin:** {predicted_class}  
                         **Güven:** {confidence:.3f}
+                        **Embedding Boyutu:** {len(embedding)}
                         """)
                         
                         # Yüklenen tek dosyayı çal
                         st.markdown("### 🎧 Yüklenen Ses")
                         st.audio(single_file.getvalue(), format='audio/wav')
                         
-                        # Benzer sesleri bul
-                        similar_sounds = classifier.find_similar_sounds(
-                            features, predicted_class, top_k=10
+                        # Embedding tabanlı benzer sesleri bul
+                        similar_sounds = classifier.find_similar_sounds_embedding(
+                            embedding, predicted_class, top_k=10
                         )
                         
                         if similar_sounds:
-                            st.subheader(f"🎯 En Benzer Sesler ({predicted_class})")
+                            st.subheader(f"🧠 En Benzer Sesler ({predicted_class})")
                             
                             for i, sim in enumerate(similar_sounds):
                                 st.markdown(f"""
                                 <div class="similarity-card">
                                     <strong>{i+1}. {sim['filename']}</strong><br>
                                     <small>
-                                    🎯 Cosine Similarity: {sim['cosine_similarity']:.3f}<br>
+                                    🧠 Embedding Similarity: {sim['cosine_similarity']:.3f}<br>
                                     📏 Euclidean Distance: {sim['euclidean_distance']:.3f}
                                     </small>
                                 </div>
@@ -426,7 +461,7 @@ def main():
                             similar_audio_single = st.selectbox(
                                 "Benzer sesleri dinleyin:",
                                 options=[sim['filename'] for sim in similar_sounds],
-                                key="similar_audio_player_single"
+                                key="similar_audio_player_single_embedding"
                             )
                             
                             if similar_audio_single and similar_audio_single in st.session_state.audio_cache:
@@ -435,15 +470,15 @@ def main():
                             st.info(f"Veritabanında {predicted_class} sınıfından başka ses bulunamadı.")
                     
                     with col2:
-                        # PCA görselleştirmesi
-                        pca_data = classifier.get_pca_visualization_data(
-                            features, predicted_class
+                        # Embedding PCA görselleştirmesi
+                        pca_data = classifier.get_pca_visualization_data_embedding(
+                            embedding, predicted_class
                         )
                         
                         if pca_data[0] is not None:
                             pca_features, pca_names, variance_ratio, pca_obj = pca_data
                             
-                            st.subheader(f"📍 PCA Haritası ({predicted_class})")
+                            st.subheader(f"📍 Embedding PCA Haritası ({predicted_class})")
                             
                             fig_pca = go.Figure()
                             
@@ -473,7 +508,7 @@ def main():
                             ))
                             
                             fig_pca.update_layout(
-                                title=f"PCA Görselleştirmesi<br>Açıklanan Varyans: PC1={variance_ratio[0]:.2%}, PC2={variance_ratio[1]:.2%}",
+                                title=f"Embedding PCA Görselleştirmesi<br>Açıklanan Varyans: PC1={variance_ratio[0]:.2%}, PC2={variance_ratio[1]:.2%}",
                                 xaxis_title="1. Ana Bileşen",
                                 yaxis_title="2. Ana Bileşen",
                                 height=500
@@ -485,23 +520,156 @@ def main():
                 else:
                     st.error("Ses dosyası işlenemedi.")
     
+    with tab3:
+        st.subheader("🔄 Yöntem Karşılaştırması")
+        st.write("Embedding tabanlı ve özellik tabanlı benzerlik yöntemlerini karşılaştırın.")
+        
+        if len(st.session_state.processed_files) < 2:
+            st.warning("Karşılaştırma için en az 2 ses dosyası yüklemeniz gerekiyor!")
+        else:
+            # Karşılaştırma için ses seçimi
+            comparison_file = st.selectbox(
+                "Karşılaştırma için bir ses seçin:",
+                options=[r['filename'] for r in st.session_state.processed_files],
+                help="Seçilen ses için embedding ve özellik tabanlı benzerlik yöntemleri karşılaştırılacak"
+            )
+            
+            if comparison_file:
+                # Seçilen sesi bul
+                selected_result = next(r for r in st.session_state.processed_files if r['filename'] == comparison_file)
+                target_class = selected_result['predicted_class']
+                target_features = selected_result['features']
+                target_embedding = selected_result['embedding']
+                
+                st.markdown(f"""
+                <div class="comparison-card">
+                    <h4>🎯 Karşılaştırma Hedefi</h4>
+                    <p><strong>Dosya:</strong> {comparison_file}</p>
+                    <p><strong>Sınıf:</strong> {target_class}</p>
+                    <p><strong>Güven:</strong> {selected_result['confidence']:.3f}</p>
+                    <p><strong>Embedding Boyutu:</strong> {len(target_embedding)}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Seçilen sesi çal
+                if comparison_file in st.session_state.audio_cache:
+                    st.audio(st.session_state.audio_cache[comparison_file], format='audio/wav')
+                
+                # Yöntem karşılaştırması
+                comparison = classifier.compare_similarity_methods(
+                    target_features, target_embedding, target_class, top_k=5
+                )
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.subheader("🧠 Embedding Tabanlı Benzerlik")
+                    
+                    for i, sim in enumerate(comparison['embedding_based']):
+                        if sim['filename'] != comparison_file:
+                            st.markdown(f"""
+                            <div class="similarity-card">
+                                <strong>{i+1}. {sim['filename']}</strong><br>
+                                <small>
+                                🧠 Embedding Similarity: {sim['cosine_similarity']:.3f}<br>
+                                📏 Euclidean Distance: {sim['euclidean_distance']:.3f}
+                                </small>
+                            </div>
+                            """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.subheader("🔧 Özellik Tabanlı Benzerlik")
+                    
+                    for i, sim in enumerate(comparison['feature_based']):
+                        if sim['filename'] != comparison_file:
+                            st.markdown(f"""
+                            <div class="similarity-card">
+                                <strong>{i+1}. {sim['filename']}</strong><br>
+                                <small>
+                                🔧 Feature Similarity: {sim['cosine_similarity']:.3f}<br>
+                                📏 Euclidean Distance: {sim['euclidean_distance']:.3f}
+                                </small>
+                            </div>
+                            """, unsafe_allow_html=True)
+                
+                # Karşılaştırma grafiği
+                st.subheader("📊 Benzerlik Skorları Karşılaştırması")
+                
+                if comparison['embedding_based'] and comparison['feature_based']:
+                    # İlk 5 benzerlik skorunu al
+                    embedding_scores = [sim['cosine_similarity'] for sim in comparison['embedding_based'][:5] if sim['filename'] != comparison_file]
+                    feature_scores = [sim['cosine_similarity'] for sim in comparison['feature_based'][:5] if sim['filename'] != comparison_file]
+                    
+                    # Grafik için veri hazırla
+                    comparison_data = []
+                    for i in range(min(len(embedding_scores), len(feature_scores))):
+                        comparison_data.append({
+                            'Sıra': i + 1,
+                            'Embedding': embedding_scores[i],
+                            'Özellik': feature_scores[i]
+                        })
+                    
+                    if comparison_data:
+                        df_comparison = pd.DataFrame(comparison_data)
+                        
+                        fig_comparison = go.Figure()
+                        
+                        fig_comparison.add_trace(go.Bar(
+                            name='🧠 Embedding',
+                            x=df_comparison['Sıra'],
+                            y=df_comparison['Embedding'],
+                            marker_color='#1f77b4'
+                        ))
+                        
+                        fig_comparison.add_trace(go.Bar(
+                            name='🔧 Özellik',
+                            x=df_comparison['Sıra'],
+                            y=df_comparison['Özellik'],
+                            marker_color='#ff7f0e'
+                        ))
+                        
+                        fig_comparison.update_layout(
+                            title="Benzerlik Yöntemleri Karşılaştırması",
+                            xaxis_title="Benzer Ses Sırası",
+                            yaxis_title="Cosine Similarity",
+                            barmode='group',
+                            height=400
+                        )
+                        
+                        st.plotly_chart(fig_comparison, use_container_width=True)
+                        
+                        # İstatistiksel karşılaştırma
+                        avg_embedding = np.mean(embedding_scores)
+                        avg_feature = np.mean(feature_scores)
+                        improvement = ((avg_embedding - avg_feature) / avg_feature) * 100
+                        
+                        st.markdown(f"""
+                        <div class="comparison-card">
+                            <h4>📈 İstatistiksel Karşılaştırma</h4>
+                            <p><strong>Ortalama Embedding Benzerlik:</strong> {avg_embedding:.3f}</p>
+                            <p><strong>Ortalama Özellik Benzerlik:</strong> {avg_feature:.3f}</p>
+                            <p><strong>İyileştirme:</strong> {improvement:+.1f}%</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+    
     # Sidebar bilgi
     with st.sidebar:
-        st.markdown("### 📋 Bilgiler")
+        st.markdown("### 🧠 Embedding Bilgileri")
         st.markdown("""
         **Özellikler:**
+        - 🧠 Son katman öncesi embedding'ler
         - 🎵 7 sınıf ses tanıma
         - 🎧 Ses çalma özelliği
-        - 🔍 Cosine similarity analizi
+        - 🔍 Embedding tabanlı similarity
         - 📏 Euclidean distance hesaplama
-        - 📊 PCA görselleştirmesi
-        - 📈 İstatistiksel analizler
-        - 🔇 **YENİ!** Sessizlik temizleme (VAD)
-        - ✂️ **YENİ!** Akıllı ses segmentasyonu
-        - 🎼 **YENİ!** İlk pattern tespiti
+        - 📊 Embedding PCA görselleştirmesi
+        - 📈 Yöntem karşılaştırması
+        - 🔇 Sessizlik temizleme (VAD)
+        - ✂️ Akıllı ses segmentasyonu
+        - 🎼 İlk pattern tespiti
         
         **Teknik Detaylar:**
-        - 42 ses özelliği
+        - 42 ses özelliği → 64 embedding boyutu
         - MFCC, RMS, ZCR, Spektral özellikler
         - TensorFlow/Keras modeli
         - Scikit-learn ön işleme
@@ -519,6 +687,7 @@ def main():
                 st.markdown(f"**{class_name}:** {count} ses")
             
             st.markdown(f"**Toplam:** {len(st.session_state.processed_files)} ses")
+            st.markdown(f"**Embedding Boyutu:** {classifier.embedding_dim}")
 
 if __name__ == "__main__":
     main() 

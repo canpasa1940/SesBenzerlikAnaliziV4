@@ -6,13 +6,18 @@ import warnings
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.decomposition import PCA
 import librosa
+import sys
+import os
+
+# Ana dizini path'e ekle
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from feature_extractor import extract_from_file, extract_features
 
-class AudioClassifier:
+class EmbeddingAudioClassifier:
     def __init__(self, model_path="my_enhanced_audio_model.h5", 
                  scaler_path="scaler.pkl", 
                  label_encoder_path="label_encoder.pkl"):
-        """Ses sınıflandırıcı ve benzerlik analizi sınıfı"""
+        """Ses sınıflandırıcı ve embedding tabanlı benzerlik analizi sınıfı"""
         warnings.filterwarnings("ignore")
         
         # Model ve ön işleme araçlarını yükle
@@ -28,8 +33,27 @@ class AudioClassifier:
         self.classes = self.label_encoder.classes_
         print(f"Model yüklendi. Sınıflar: {self.classes}")
         
-        # Referans ses veritabanı
+        # Embedding model oluştur (son katman öncesi)
+        self._create_embedding_model()
+        
+        # Referans ses veritabanı (embedding'ler ile)
         self.reference_database = []
+        
+    def _create_embedding_model(self):
+        """Son katman öncesi embedding model oluştur"""
+        # Model'in son katmanını çıkar
+        embedding_model = tf.keras.Model(
+            inputs=self.model.input,
+            outputs=self.model.layers[-2].output  # Son katman öncesi
+        )
+        self.embedding_model = embedding_model
+        
+        # Embedding boyutunu al
+        sample_input = np.zeros((1, 42))  # 42 özellik
+        sample_embedding = self.embedding_model.predict(sample_input, verbose=0)
+        self.embedding_dim = sample_embedding.shape[1]
+        
+        print(f"🎯 Embedding model oluşturuldu. Boyut: {self.embedding_dim}")
         
     def remove_silence(self, y, sr=22050, frame_length=2048, hop_length=512):
         """Sessizlik bölümlerini temizle (Voice Activity Detection)"""
@@ -140,15 +164,20 @@ class AudioClassifier:
         
         return first_pattern
     
-    def predict_single_enhanced(self, audio_file, use_vad=True, use_segmentation=True, use_first_pattern=True):
-        """Gelişmiş tek dosya sınıflandırma (VAD + Segmentasyon + İlk Pattern)"""
+    def get_embedding(self, feature_vector_scaled):
+        """Özellik vektöründen embedding çıkar"""
+        embedding = self.embedding_model.predict(feature_vector_scaled, verbose=0)
+        return embedding[0]  # (embedding_dim,) boyutunda
+    
+    def predict_single_with_embedding(self, audio_file, use_vad=True, use_segmentation=True, use_first_pattern=True):
+        """Embedding tabanlı tek dosya sınıflandırma"""
         try:
             # Ses dosyasını yükle
             y, sr = librosa.load(audio_file, sr=22050)
             
             # Çok kısa sesler için standart yöntemi kullan
             if len(y) < sr * 3:  # 3 saniyeden kısa
-                return self.predict_single(audio_file)
+                return self.predict_single_with_embedding_simple(audio_file)
             
             print(f"🎵 Uzun ses dosyası tespit edildi ({len(y)/sr:.1f}s)")
             
@@ -169,7 +198,7 @@ class AudioClassifier:
                 segments = self.segment_audio(y_cleaned, sr)
                 print(f"✂️ {len(segments)} segmente bölündü")
                 
-                all_features = []
+                all_embeddings = []
                 all_predictions = []
                 all_confidences = []
                 
@@ -191,36 +220,39 @@ class AudioClassifier:
                     feature_vector = np.array([features[name] for name in feature_names]).reshape(1, -1)
                     feature_vector_scaled = self.scaler.transform(feature_vector)
                     
+                    # Embedding çıkar
+                    embedding = self.get_embedding(feature_vector_scaled)
+                    
                     # Tahmin yap
                     prediction = self.model.predict(feature_vector_scaled, verbose=0)
                     predicted_class_idx = np.argmax(prediction[0])
                     predicted_class = self.classes[predicted_class_idx]
                     confidence = prediction[0][predicted_class_idx]
                     
-                    all_features.append(feature_vector_scaled[0])
+                    all_embeddings.append(embedding)
                     all_predictions.append(predicted_class)
                     all_confidences.append(confidence)
                 
                 if not all_predictions:
-                    return None, None, None
+                    return None, None, None, None
                 
                 # En güvenli tahmini seç
                 best_idx = np.argmax(all_confidences)
                 final_prediction = all_predictions[best_idx]
                 final_confidence = all_confidences[best_idx]
                 
-                # Özelliklerin ortalamasını al
-                final_features = np.mean(all_features, axis=0)
+                # Embedding'lerin ortalamasını al
+                final_embedding = np.mean(all_embeddings, axis=0)
                 
                 print(f"🎯 En iyi segment: {final_prediction} (güven: {final_confidence:.3f})")
                 
-                return final_prediction, final_confidence, final_features
+                return final_prediction, final_confidence, feature_vector_scaled[0], final_embedding
             
             else:
                 # Tek parça olarak işle (temizlenmiş ses ile)
                 features = extract_features(y_cleaned, sr)
                 if features is None:
-                    return None, None, None
+                    return None, None, None, None
                     
                 # DataFrame'e çevir ve sırala
                 feature_names = [f"mfcc{i+1:02d}" for i in range(20)] + [
@@ -234,6 +266,9 @@ class AudioClassifier:
                 feature_vector = np.array([features[name] for name in feature_names]).reshape(1, -1)
                 feature_vector_scaled = self.scaler.transform(feature_vector)
                 
+                # Embedding çıkar
+                embedding = self.get_embedding(feature_vector_scaled)
+                
                 # Tahmin yap
                 prediction = self.model.predict(feature_vector_scaled, verbose=0)
                 predicted_class_idx = np.argmax(prediction[0])
@@ -242,19 +277,19 @@ class AudioClassifier:
                 
                 print(f"🎯 İlk pattern analizi: {predicted_class} (güven: {confidence:.3f})")
                 
-                return predicted_class, confidence, feature_vector_scaled[0]
+                return predicted_class, confidence, feature_vector_scaled[0], embedding
                 
         except Exception as e:
             print(f"❌ Hata: {e}")
             # Hata durumunda standart yöntemi dene
-            return self.predict_single(audio_file)
+            return self.predict_single_with_embedding_simple(audio_file)
 
-    def predict_single(self, audio_file):
-        """Orijinal tek dosya sınıflandırma"""
+    def predict_single_with_embedding_simple(self, audio_file):
+        """Basit embedding tabanlı tek dosya sınıflandırma"""
         # Özellik çıkar
         features = extract_from_file(audio_file)
         if features is None:
-            return None, None, None
+            return None, None, None, None
             
         # DataFrame'e çevir ve sırala
         feature_names = [f"mfcc{i+1:02d}" for i in range(20)] + [
@@ -270,24 +305,28 @@ class AudioClassifier:
         # Normalize et
         feature_vector_scaled = self.scaler.transform(feature_vector)
         
+        # Embedding çıkar
+        embedding = self.get_embedding(feature_vector_scaled)
+        
         # Tahmin yap
         prediction = self.model.predict(feature_vector_scaled, verbose=0)
         predicted_class_idx = np.argmax(prediction[0])
         predicted_class = self.classes[predicted_class_idx]
         confidence = prediction[0][predicted_class_idx]
         
-        return predicted_class, confidence, feature_vector_scaled[0]
+        return predicted_class, confidence, feature_vector_scaled[0], embedding
     
-    def add_to_database(self, audio_file, predicted_class, features):
-        """Sesi referans veritabanına ekle"""
+    def add_to_database(self, audio_file, predicted_class, features, embedding):
+        """Sesi referans veritabanına ekle (embedding ile)"""
         self.reference_database.append({
             'filename': audio_file.name if hasattr(audio_file, 'name') else str(audio_file),
             'class': predicted_class,
-            'features': features
+            'features': features,
+            'embedding': embedding
         })
     
-    def find_similar_sounds(self, target_features, target_class, top_k=5):
-        """Benzer sesleri bul"""
+    def find_similar_sounds_embedding(self, target_embedding, target_class, top_k=5):
+        """Embedding tabanlı benzer sesleri bul"""
         if len(self.reference_database) == 0:
             return []
             
@@ -296,18 +335,19 @@ class AudioClassifier:
         for ref in self.reference_database:
             # Aynı sınıftan olanları öncelendir
             if ref['class'] == target_class:
-                # Cosine similarity hesapla
-                cos_sim = cosine_similarity([target_features], [ref['features']])[0][0]
+                # Embedding cosine similarity hesapla
+                cos_sim = cosine_similarity([target_embedding], [ref['embedding']])[0][0]
                 
-                # Euclidean distance hesapla  
-                euc_dist = euclidean_distances([target_features], [ref['features']])[0][0]
+                # Embedding euclidean distance hesapla  
+                euc_dist = euclidean_distances([target_embedding], [ref['embedding']])[0][0]
                 
                 similarities.append({
                     'filename': ref['filename'],
                     'class': ref['class'],
                     'cosine_similarity': cos_sim,
                     'euclidean_distance': euc_dist,
-                    'features': ref['features']
+                    'features': ref['features'],
+                    'embedding': ref['embedding']
                 })
         
         # Cosine similarity'ye göre sırala (yüksekten düşüğe)
@@ -315,50 +355,81 @@ class AudioClassifier:
         
         return similarities[:top_k]
     
-    def get_pca_visualization_data(self, target_features, target_class):
-        """PCA ile 2D görselleştirme verisi hazırla"""
+    def find_similar_sounds_features(self, target_features, target_class, top_k=5):
+        """Özellik tabanlı benzer sesleri bul (karşılaştırma için)"""
+        if len(self.reference_database) == 0:
+            return []
+            
+        similarities = []
+        
+        for ref in self.reference_database:
+            # Aynı sınıftan olanları öncelendir
+            if ref['class'] == target_class:
+                # Feature cosine similarity hesapla
+                cos_sim = cosine_similarity([target_features], [ref['features']])[0][0]
+                
+                # Feature euclidean distance hesapla  
+                euc_dist = euclidean_distances([target_features], [ref['features']])[0][0]
+                
+                similarities.append({
+                    'filename': ref['filename'],
+                    'class': ref['class'],
+                    'cosine_similarity': cos_sim,
+                    'euclidean_distance': euc_dist,
+                    'features': ref['features'],
+                    'embedding': ref['embedding']
+                })
+        
+        # Cosine similarity'ye göre sırala (yüksekten düşüğe)
+        similarities = sorted(similarities, key=lambda x: x['cosine_similarity'], reverse=True)
+        
+        return similarities[:top_k]
+    
+    def get_pca_visualization_data_embedding(self, target_embedding, target_class):
+        """Embedding PCA ile 2D görselleştirme verisi hazırla"""
         if len(self.reference_database) < 2:
             return None, None, None, None
             
         # Aynı sınıftan sesleri al
-        same_class_features = []
+        same_class_embeddings = []
         same_class_names = []
         
         for ref in self.reference_database:
             if ref['class'] == target_class:
-                same_class_features.append(ref['features'])
+                same_class_embeddings.append(ref['embedding'])
                 same_class_names.append(ref['filename'])
         
-        if len(same_class_features) < 2:
+        if len(same_class_embeddings) < 2:
             return None, None, None, None
             
         # Target ses ile birleştir
-        all_features = same_class_features + [target_features]
+        all_embeddings = same_class_embeddings + [target_embedding]
         all_names = same_class_names + ['Yüklenen Ses']
         
         # PCA uygula
         pca = PCA(n_components=2)
-        pca_features = pca.fit_transform(all_features)
+        pca_embeddings = pca.fit_transform(all_embeddings)
         
-        return pca_features, all_names, pca.explained_variance_ratio_, pca
+        return pca_embeddings, all_names, pca.explained_variance_ratio_, pca
     
     def classify_multiple_files(self, audio_files):
-        """Birden fazla ses dosyasını sınıflandır"""
+        """Birden fazla ses dosyasını sınıflandır (embedding ile)"""
         results = []
         
         for audio_file in audio_files:
-            result = self.predict_single(audio_file)
+            result = self.predict_single_with_embedding_simple(audio_file)
             if result[0] is not None:
-                predicted_class, confidence, features = result
+                predicted_class, confidence, features, embedding = result
                 
                 # Veritabanına ekle
-                self.add_to_database(audio_file, predicted_class, features)
+                self.add_to_database(audio_file, predicted_class, features, embedding)
                 
                 results.append({
                     'filename': audio_file.name if hasattr(audio_file, 'name') else str(audio_file),
                     'predicted_class': predicted_class,
                     'confidence': confidence,
-                    'features': features
+                    'features': features,
+                    'embedding': embedding
                 })
         
         return results
@@ -370,4 +441,16 @@ class AudioClassifier:
             
         df = pd.DataFrame(self.reference_database)
         summary = df['class'].value_counts().to_dict()
-        return summary 
+        return summary
+    
+    def compare_similarity_methods(self, target_features, target_embedding, target_class, top_k=5):
+        """Özellik ve embedding tabanlı benzerlik yöntemlerini karşılaştır"""
+        feature_similarities = self.find_similar_sounds_features(target_features, target_class, top_k)
+        embedding_similarities = self.find_similar_sounds_embedding(target_embedding, target_class, top_k)
+        
+        comparison = {
+            'feature_based': feature_similarities,
+            'embedding_based': embedding_similarities
+        }
+        
+        return comparison 
