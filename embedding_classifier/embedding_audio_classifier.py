@@ -326,62 +326,94 @@ class EmbeddingAudioClassifier:
         })
     
     def find_similar_sounds_embedding(self, target_embedding, target_class, top_k=5):
-        """Embedding tabanlı benzer sesleri bul"""
+        """Toplu matris tabanlı embedding benzerlik analizi"""
         if len(self.reference_database) == 0:
             return []
-            
+        
+        # Aynı sınıftan tüm embedding'leri topla
+        same_class_refs = [ref for ref in self.reference_database if ref['class'] == target_class]
+        
+        if len(same_class_refs) == 0:
+            return []
+        
+        # Toplu matris oluştur
+        # Target: (1, 64) -> (1, 64)
+        # References: (N, 64) -> (N, 64) matrisi
+        target_matrix = np.array([target_embedding])  # (1, 64)
+        ref_matrix = np.array([ref['embedding'] for ref in same_class_refs])  # (N, 64)
+        
+        print(f"🎯 Toplu matris analizi:")
+        print(f"   Target boyutu: {target_matrix.shape}")
+        print(f"   Referans matrisi boyutu: {ref_matrix.shape}")
+        
+        # Toplu cosine similarity hesapla
+        # cosine_similarity(target_matrix, ref_matrix) -> (1, N) matrisi
+        cos_similarities = cosine_similarity(target_matrix, ref_matrix)[0]  # (N,) vektörü
+        
+        # Toplu euclidean distance hesapla
+        # euclidean_distances(target_matrix, ref_matrix) -> (1, N) matrisi
+        euc_distances = euclidean_distances(target_matrix, ref_matrix)[0]  # (N,) vektörü
+        
+        # Sonuçları birleştir
         similarities = []
+        for i, ref in enumerate(same_class_refs):
+            similarities.append({
+                'filename': ref['filename'],
+                'class': ref['class'],
+                'cosine_similarity': cos_similarities[i],
+                'euclidean_distance': euc_distances[i],
+                'embedding': ref['embedding']
+            })
         
-        for ref in self.reference_database:
-            # Aynı sınıftan olanları öncelendir
-            if ref['class'] == target_class:
-                # Embedding cosine similarity hesapla
-                cos_sim = cosine_similarity([target_embedding], [ref['embedding']])[0][0]
-                
-                # Embedding euclidean distance hesapla  
-                euc_dist = euclidean_distances([target_embedding], [ref['embedding']])[0][0]
-                
-                similarities.append({
-                    'filename': ref['filename'],
-                    'class': ref['class'],
-                    'cosine_similarity': cos_sim,
-                    'euclidean_distance': euc_dist,
-                    'features': ref['features'],
-                    'embedding': ref['embedding']
-                })
-        
-        # Cosine similarity'ye göre sırala (yüksekten düşüğe)
+        # Cosine similarity'ye göre sırala
         similarities = sorted(similarities, key=lambda x: x['cosine_similarity'], reverse=True)
+        
+        print(f"   ✅ Toplu analiz tamamlandı: {len(similarities)} benzerlik hesaplandı")
         
         return similarities[:top_k]
     
     def find_similar_sounds_features(self, target_features, target_class, top_k=5):
-        """Özellik tabanlı benzer sesleri bul (karşılaştırma için)"""
+        """Toplu matris tabanlı özellik benzerlik analizi"""
         if len(self.reference_database) == 0:
             return []
-            
+        
+        # Aynı sınıftan tüm özellikleri topla
+        same_class_refs = [ref for ref in self.reference_database if ref['class'] == target_class]
+        
+        if len(same_class_refs) == 0:
+            return []
+        
+        # Toplu matris oluştur
+        # Target: (1, 42) -> (1, 42) - 42 özellik
+        # References: (N, 42) -> (N, 42) matrisi
+        target_matrix = np.array([target_features])  # (1, 42)
+        ref_matrix = np.array([ref['features'] for ref in same_class_refs])  # (N, 42)
+        
+        print(f"🔧 Toplu özellik matris analizi:")
+        print(f"   Target boyutu: {target_matrix.shape}")
+        print(f"   Referans matrisi boyutu: {ref_matrix.shape}")
+        
+        # Toplu cosine similarity hesapla
+        cos_similarities = cosine_similarity(target_matrix, ref_matrix)[0]  # (N,) vektörü
+        
+        # Toplu euclidean distance hesapla
+        euc_distances = euclidean_distances(target_matrix, ref_matrix)[0]  # (N,) vektörü
+        
+        # Sonuçları birleştir
         similarities = []
+        for i, ref in enumerate(same_class_refs):
+            similarities.append({
+                'filename': ref['filename'],
+                'class': ref['class'],
+                'cosine_similarity': cos_similarities[i],
+                'euclidean_distance': euc_distances[i],
+                'features': ref['features']
+            })
         
-        for ref in self.reference_database:
-            # Aynı sınıftan olanları öncelendir
-            if ref['class'] == target_class:
-                # Feature cosine similarity hesapla
-                cos_sim = cosine_similarity([target_features], [ref['features']])[0][0]
-                
-                # Feature euclidean distance hesapla  
-                euc_dist = euclidean_distances([target_features], [ref['features']])[0][0]
-                
-                similarities.append({
-                    'filename': ref['filename'],
-                    'class': ref['class'],
-                    'cosine_similarity': cos_sim,
-                    'euclidean_distance': euc_dist,
-                    'features': ref['features'],
-                    'embedding': ref['embedding']
-                })
-        
-        # Cosine similarity'ye göre sırala (yüksekten düşüğe)
+        # Cosine similarity'ye göre sırala
         similarities = sorted(similarities, key=lambda x: x['cosine_similarity'], reverse=True)
+        
+        print(f"   ✅ Toplu özellik analizi tamamlandı: {len(similarities)} benzerlik hesaplandı")
         
         return similarities[:top_k]
     
